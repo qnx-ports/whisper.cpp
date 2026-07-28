@@ -12,4 +12,8 @@ if (WIN32)
     target_link_libraries(${TARGET} PRIVATE ws2_32)
 endif()
 
+if (CMAKE_SYSTEM_NAME STREQUAL "QNX")
+    target_link_libraries(${TARGET} PRIVATE socket)
+endif()
+
 install(TARGETS ${TARGET} RUNTIME)
