@@ -67,23 +67,33 @@ if (Vulkan_FOUND)
     set(VULKAN_SHADER_GEN_CMAKE_ARGS "")
 
     # Test all shader extensions
-    test_shader_extension_support(
-        "GL_KHR_cooperative_matrix"
-        "${CMAKE_CURRENT_SOURCE_DIR}/vulkan-shaders/feature-tests/coopmat.comp"
-        "GGML_VULKAN_COOPMAT_GLSLC_SUPPORT"
-    )
+    # QNX: glslc's basic coopmat feature test passes, but the full flash_attn cooperative
+    # matrix shaders fail intermittently on QNX due to resource constraints during
+    # shader generation, and QNX's gfxstream ICD does not expose cooperative matrix
+    # support at runtime.  Disable coopmat/coopmat2 shader compilation on QNX.
+    if(NOT QNXNTO)
+        test_shader_extension_support(
+            "GL_KHR_cooperative_matrix"
+            "${CMAKE_CURRENT_SOURCE_DIR}/vulkan-shaders/feature-tests/coopmat.comp"
+            "GGML_VULKAN_COOPMAT_GLSLC_SUPPORT"
+        )
 
-    test_shader_extension_support(
-        "GL_NV_cooperative_matrix2"
-        "${CMAKE_CURRENT_SOURCE_DIR}/vulkan-shaders/feature-tests/coopmat2.comp"
-        "GGML_VULKAN_COOPMAT2_GLSLC_SUPPORT"
-    )
+        test_shader_extension_support(
+            "GL_NV_cooperative_matrix2"
+            "${CMAKE_CURRENT_SOURCE_DIR}/vulkan-shaders/feature-tests/coopmat2.comp"
+            "GGML_VULKAN_COOPMAT2_GLSLC_SUPPORT"
+        )
 
-    test_shader_extension_support(
-        "GL_NV_cooperative_matrix_decode_vector"
-        "${CMAKE_CURRENT_SOURCE_DIR}/vulkan-shaders/feature-tests/coopmat2_decode_vector.comp"
-        "GGML_VULKAN_COOPMAT2_DECODE_VECTOR_GLSLC_SUPPORT"
-    )
+        test_shader_extension_support(
+            "GL_NV_cooperative_matrix_decode_vector"
+            "${CMAKE_CURRENT_SOURCE_DIR}/vulkan-shaders/feature-tests/coopmat2_decode_vector.comp"
+            "GGML_VULKAN_COOPMAT2_DECODE_VECTOR_GLSLC_SUPPORT"
+        )
+    else()
+        message(STATUS "GL_KHR_cooperative_matrix disabled on QNX (not supported by gfxstream ICD)")
+        message(STATUS "GL_NV_cooperative_matrix2 disabled on QNX (not supported by gfxstream ICD)")
+        message(STATUS "GL_NV_cooperative_matrix_decode_vector disabled on QNX (not supported by gfxstream ICD)")
+    endif()
 
     test_shader_extension_support(
         "GL_EXT_integer_dot_product"
