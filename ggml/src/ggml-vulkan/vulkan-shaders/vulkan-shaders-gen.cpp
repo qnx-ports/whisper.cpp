@@ -326,7 +326,18 @@ using compile_count_guard = std::unique_ptr<uint32_t, decltype(&decrement_compil
 compile_count_guard acquire_compile_slot() {
     // wait until fewer than N compiles are in progress.
     // 16 is an arbitrary limit, the goal is to avoid "failed to create pipe" errors.
+    // QNX enforces a hard per-process FD limit (default 1000, set via procnto -f in the
+    // system image).  Concurrent glslc invocations exhaust available FDs: fork()/pipe()
+    // succeeds but glslc exits without writing its .spv file, silently omitting shader
+    // variants.  N=4 still produced ~10% intermittent failures; N=1 is required at the
+    // default limit.  This guard can be removed once the target image is built with a
+    // sufficiently high -f value (e.g. procnto-smp-instr -f 32768) and that setting has
+    // been validated to eliminate the failures.
+#if defined(__QNX__)
+    uint32_t N = 1u;
+#else
     uint32_t N = std::max(1u, std::min(16u, std::thread::hardware_concurrency()));
+#endif
     std::unique_lock<std::mutex> guard(compile_count_mutex);
     compile_count_cond.wait(guard, [N] { return compile_count < N; });
     compile_count++;
