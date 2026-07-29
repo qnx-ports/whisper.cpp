@@ -9,9 +9,11 @@ the QNX build fixes already proven on this same box for
 also `ggml`-based. Unlike those two, whisper.cpp vendors `ggml` inline rather than as
 a submodule, so all patches below live directly in this repo's `ggml/` subtree.
 
-CPU-only inference is verified end-to-end on this QEMU dev box. The Vulkan backend
-builds and correctly enumerates the GPU device, but real GPU inference dispatch has
-**not** been runtime-tested here — see "Vulkan status" below before relying on it.
+CPU-only inference is verified end-to-end on both an x86_64 QEMU dev box and real
+ARM64 hardware (Raspberry Pi 5). The Vulkan backend builds and correctly enumerates
+the GPU device on x86_64/QEMU, but real GPU inference dispatch has **not** been
+runtime-tested there — see "Vulkan status" below before relying on it. Vulkan was
+not evaluated on ARM at all this round (CPU-only was the ask).
 
 ---
 
@@ -61,6 +63,22 @@ All four are adapted from the same fixes already applied in
    libc; `whisper-server` fails to link without this (`undefined reference to
    'recv@@libsocket.so.4'`).
 
+5. **`ggml/cmake/common.cmake`** — `ggml_get_system_arch()`'s ARM-detection regex
+   (`^(aarch64|arm.*|ARM64)$`) requires an exact match against
+   `CMAKE_SYSTEM_PROCESSOR`, but QNX reports `aarch64le` (endianness-qualified, not
+   bare `aarch64`) on ARM64 targets. This silently fell through to
+   `GGML_SYSTEM_ARCH=UNKNOWN`, and `ggml-cpu` built with `GGML_CPU_GENERIC` — no
+   NEON/dotprod/FMA codegen at all, correctness unaffected but a real perf loss.
+   Widened the regex to `^(aarch64(le|be)?|arm.*|ARM64)$`. Verified on a Raspberry
+   Pi 5: before the fix, generic-only; after, `GGML_SYSTEM_ARCH` resolves to `ARM`,
+   `HAVE_DOTPROD`/`HAVE_FMA` checks pass, and `whisper-cli` reports `NEON = 1 |
+   ARM_FMA = 1 | DOTPROD = 1` at runtime. This is an ARM-only fix and doesn't affect
+   the x86_64 build (which has its own separate, unrelated `CMAKE_SYSTEM_PROCESSOR:
+   unknown` quirk on this QEMU box — see the CPU-only build note below). **Likely
+   applicable to llama.cpp/stable-diffusion.cpp too** if either is ever built on
+   ARM64 QNX — their vendored copies of this same file have the identical unfixed
+   regex, unexercised so far because both were only built on x86_64 QEMU here.
+
 **Checked, not needed:** the `--whole-archive` linker workaround that sd.cpp's
 top-level `SD_LIB` target required (its SPIR-V shader objects get silently dropped
 by the linker when statically linking `ggml-vulkan` into a shared lib, because
@@ -108,6 +126,44 @@ sh ./models/download-ggml-model.sh tiny.en
 
 Produces correct output: *"And so my fellow Americans ask not what your country can
 do for you, ask what you can do for your country."*
+
+---
+
+## ARM64 (aarch64) — verified on QNX 8.0, Raspberry Pi 5
+
+CPU-only build and inference verified end-to-end on real ARM hardware, not just
+QEMU. Same CMake invocation as the x86_64 CPU-only build above, just with this
+box's toolchain path (found via `which clang clang++`) and `-j4` (RPi 5, 4 cores):
+
+```sh
+cmake -B build_cpu -G Ninja \
+  -DCMAKE_C_COMPILER=/system/bin/clang -DCMAKE_CXX_COMPILER=/system/bin/clang++ \
+  -DCMAKE_BUILD_TYPE=Release -DGGML_VULKAN=OFF -DWHISPER_SDL2=OFF
+cmake --build build_cpu -j4
+```
+
+The compiler path differs from the x86_64 QEMU dev box (`/system/bin/clang` here
+vs. `/usr/bin/clang` there) — this appears to be a difference between QNX device
+images rather than an architecture-specific requirement; check `which clang` on
+whatever box you're building on rather than assuming either path.
+
+No source patches were needed beyond the arch-detection fix in patch 5 above (which
+is what makes this build actually use NEON instead of silently falling back to
+generic). Confirmed via `whisper-cli`'s runtime `system_info` line:
+
+```
+system_info: n_threads = 4 / 4 | WHISPER : COREML = 0 | OPENVINO = 0 | CPU : NEON = 1 | ARM_FMA = 1 | DOTPROD = 1 | OPENMP = 1 | REPACK = 1 |
+```
+
+and correct transcription output from the same `tiny.en` + `samples/jfk.wav` test
+used on x86_64. Encode time was roughly 2x faster than the x86_64 QEMU box's
+generic-fallback build (3.0s vs. 6.0s) despite having half the cores (4 vs. 8) —
+consistent with NEON dotprod genuinely being used rather than a fluke.
+
+Vulkan was not attempted on this ARM board this round — CPU-only was the ask, and
+whether this specific Pi's GPU/driver stack even exposes a usable Vulkan ICD under
+QNX was never investigated. Treat that as a fully open question for whoever picks
+it up next, not as "probably works like x86_64."
 
 ---
 
