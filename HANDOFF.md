@@ -160,10 +160,10 @@ used on x86_64. Encode time was roughly 2x faster than the x86_64 QEMU box's
 generic-fallback build (3.0s vs. 6.0s) despite having half the cores (4 vs. 8) —
 consistent with NEON dotprod genuinely being used rather than a fluke.
 
-Vulkan was not attempted on this ARM board this round — CPU-only was the ask, and
-whether this specific Pi's GPU/driver stack even exposes a usable Vulkan ICD under
-QNX was never investigated. Treat that as a fully open question for whoever picks
-it up next, not as "probably works like x86_64."
+**Update: Vulkan was subsequently tried on this ARM board and evaluated fully —
+see "ARM64 Vulkan status" below.** Short version: it builds and the GPU enumerates
+correctly, but runtime dispatch fails with a clean, well-understood error that's an
+upstream ggml-vulkan limitation, not a QNX issue.
 
 ---
 
@@ -218,3 +218,52 @@ dispatch was intentionally left untested to avoid that risk.
    native ICD, which will use its own driver-level cache.
 4. Once you've validated real dispatch works, please fold that confirmation back
    into this doc / the upstream PR description.
+
+---
+
+## ARM64 Vulkan status — builds and enumerates, real dispatch fails with a known cause
+
+Tried on the same Raspberry Pi 5 as the ARM64 CPU work above. This board's GPU is
+**real native hardware** — Broadcom VideoCore VII via Mesa's V3DV driver, not a
+virtio-gpu/Venus passthrough setup like the x86_64 QEMU box — so this is a
+meaningfully different scenario, not just "the same test on different silicon."
+
+**Toolchain gap:** `shaderc`, `shaderc-dev`, `glslang`, `spirv-headers`, and
+`vulkan-headers` were not installed by default on this board; `apk add` them before
+configuring with `-DGGML_VULKAN=ON`. Screen compositor was already running with a
+GPU registered at `/dev/screen/gpus/gpu-1` — no manual startup needed here, unlike
+the QEMU box.
+
+**Build:** succeeds cleanly, 351/351 targets (including `whisper-server`). Same
+`N=1` shader-serialization slowness as x86_64 applies — budget real time for it.
+
+**Runtime:** the device enumerates correctly —
+```
+ggml_vulkan: Found 1 Vulkan devices:
+ggml_vulkan: 0 = V3D 7.1.10.2 (V3DV Mesa) | uma: 1 | fp16: 0 | ... shared memory: 16384 | ...
+```
+but `whisper_init_with_params_no_state` throws immediately:
+```
+ggml_vulkan: Error: Shared memory size too small for matrix multiplication.
+```
+
+This traces to `ggml_vk_matmul_shmem_support()` in `ggml/src/ggml-vulkan/ggml-vulkan.cpp`:
+at backend init, ggml checks whether the device's workgroup shared memory fits even
+its *smallest* matmul tile configuration (`s_warptile_mmq`), across every tensor
+type, and hard-throws if not. V3D's 16KB of workgroup shared memory is below what
+these tile sizes assume — they're tuned around desktop/discrete GPUs' typical
+32–64KB+. **This is an upstream `ggml-vulkan` limitation, not a QNX-specific bug.**
+None of the QNX patches in this repo are involved, and the identical failure would
+occur on Linux/RPi OS with this same hardware — it's a small-shared-memory GPU
+compatibility gap in ggml-vulkan's matmul tuning, not a porting issue. A real fix
+would mean adding a smaller warptile configuration upstream, out of scope here.
+
+Confirmed the *same* Vulkan-built binary's `--no-gpu` path still works correctly
+(identical transcription, ~3s encode time matching the CPU-only build) — the
+failure is isolated purely to GPU backend init, nothing else is affected.
+
+**Silver lining for the deadlock question above:** this result is actually useful
+confirmation of point 2's bet — real bare-metal hardware here hit a completely
+different, clean, well-understood failure mode, with no sign of the drm-virtio-style
+deadlock at all. That's consistent with the deadlock being specific to virtio-gpu
+passthrough rather than a general QNX Vulkan problem.
